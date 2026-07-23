@@ -45,15 +45,15 @@ export const Navbar: React.FC<NavbarProps> = ({ dbCount, crawledCount, onOpenBat
             </div>
           </div>
 
-          {/* GoClaw API Indicator */}
+          {/* MaSoThue.com Data Indicator */}
           <a
-            href="https://fetch.goclaw.sh/"
+            href="https://masothue.com"
             target="_blank"
             rel="noreferrer"
             className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-500/10 border border-violet-500/20 text-xs text-violet-300 hover:bg-violet-500/20 transition"
           >
             <Cpu className="w-3.5 h-3.5 text-violet-400" />
-            <span>GoClaw Fetch API</span>
+            <span>MaSoThue.com Engine</span>
           </a>
 
           {/* Batch Crawl Button */}

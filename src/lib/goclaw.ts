@@ -36,8 +36,16 @@ function removeVietnameseTones(str: string): string {
     .replace(/[\s-]+/g, '-');
 }
 
+const DEFAULT_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Cache-Control': 'no-cache',
+  'Referer': 'https://masothue.com/'
+};
+
 /**
- * Main Crawler Function using GoClaw Fetch API (https://fetch.goclaw.sh/)
+ * Main Crawler Function using MaSoThue.com (https://masothue.com) & VietQR API
  */
 export async function crawlCompanyInfo(query: string): Promise<{
   success: boolean;
@@ -50,15 +58,15 @@ export async function crawlCompanyInfo(query: string): Promise<{
     return { success: false, error: 'Chưa nhập thông tin cần tra cứu.' };
   }
 
-  let rawMarkdown = '';
-  let sourceUrl = '';
+  let sourceUrl = 'https://masothue.com';
+  let rawContent = '';
   let extracted: Partial<ExtractedCompanyData> = {};
 
   try {
     if (isTaxCode(trimmed)) {
       const cleanMst = trimmed.replace(/\s+/g, '');
-      
-      // Step 1: Query VietQR Business API for official Name, Address, Status
+
+      // Step 1: Get official metadata from VietQR API (fast & highly reliable)
       try {
         const vqrRes = await fetch(`https://api.vietqr.io/v2/business/${cleanMst}`, {
           headers: { 'User-Agent': 'Mozilla/5.0' },
@@ -77,54 +85,53 @@ export async function crawlCompanyInfo(query: string): Promise<{
           }
         }
       } catch (e) {
-        console.warn('VietQR API fallback error:', e);
+        console.warn('VietQR API warning:', e);
       }
 
-      // Step 2: Query GoClaw Fetch API on thongtindoanhnghiep.co
-      sourceUrl = `https://thongtindoanhnghiep.co/tim-kiem?kwd=%22${cleanMst}%22`;
-      const goclawUrl = `https://fetch.goclaw.sh/${sourceUrl}`;
-      const goclawRes = await fetch(goclawUrl, { next: { revalidate: 0 } });
+      // Step 2: Fetch detail page directly from https://masothue.com using generated slug
+      const companyNameForSlug = extracted.name || `cong-ty-${cleanMst}`;
+      const slug = removeVietnameseTones(companyNameForSlug);
+      sourceUrl = `https://masothue.com/${cleanMst}-${slug}`;
 
-      if (goclawRes.ok) {
-        const searchMd = await goclawRes.text();
-        rawMarkdown = searchMd;
+      console.log('Crawling MaSoThue.com:', sourceUrl);
+      try {
+        let masothueRes = await fetch(sourceUrl, {
+          headers: DEFAULT_HEADERS,
+          next: { revalidate: 0 }
+        });
 
-        // Parse search markdown
-        const searchParsed = parseMarkdownCompany(searchMd, cleanMst);
-        extracted = { ...searchParsed, ...extracted };
-
-        // Step 3: Fetch detail page slug to get Legal Rep, Phone, Email & Main Business accurately
-        const companyTitle = searchParsed.name || extracted.name || '';
-        if (companyTitle) {
-          const slug = removeVietnameseTones(companyTitle);
-          const detailUrl = `https://thongtindoanhnghiep.co/${cleanMst}-${slug}`;
-          console.log('Fetching Detail Slug Page:', detailUrl);
-
-          try {
-            const detailRes = await fetch(`https://fetch.goclaw.sh/${detailUrl}`, { next: { revalidate: 0 } });
-            if (detailRes.ok) {
-              const detailMd = await detailRes.text();
-              rawMarkdown += '\n\n--- DETAIL PAGE ---\n\n' + detailMd;
-
-              const detailParsed = parseMarkdownCompany(detailMd, cleanMst);
-              if (detailParsed.legalRepresentative) extracted.legalRepresentative = detailParsed.legalRepresentative;
-              if (detailParsed.phone) extracted.phone = detailParsed.phone;
-              if (detailParsed.email) extracted.email = detailParsed.email;
-              if (detailParsed.mainBusiness) extracted.mainBusiness = detailParsed.mainBusiness;
-              if (detailParsed.foundingDate) extracted.foundingDate = detailParsed.foundingDate;
-              if (detailParsed.managementUnit) extracted.managementUnit = detailParsed.managementUnit;
-            }
-          } catch (e) {
-            console.warn('Detail slug fetch error:', e);
-          }
+        // Fallback: try searching on masothue.com if direct slug was redirected/not 200
+        if (!masothueRes.ok) {
+          sourceUrl = `https://masothue.com/Search/?q=${cleanMst}&type=auto`;
+          masothueRes = await fetch(sourceUrl, { headers: DEFAULT_HEADERS, next: { revalidate: 0 } });
         }
+
+        if (masothueRes.ok) {
+          const html = await masothueRes.text();
+          rawContent = html;
+
+          const parsed = parseMasothueHtml(html, cleanMst);
+          extracted = { ...extracted, ...parsed };
+          if (parsed.legalRepresentative) extracted.legalRepresentative = parsed.legalRepresentative;
+          if (parsed.phone) extracted.phone = parsed.phone;
+          if (parsed.email) extracted.email = parsed.email;
+          if (parsed.mainBusiness) extracted.mainBusiness = parsed.mainBusiness;
+          if (parsed.foundingDate) extracted.foundingDate = parsed.foundingDate;
+          if (parsed.managementUnit) extracted.managementUnit = parsed.managementUnit;
+          if (parsed.status) extracted.status = parsed.status;
+          if (parsed.address) extracted.address = parsed.address;
+          if (parsed.name && !extracted.name) extracted.name = parsed.name;
+        }
+      } catch (e) {
+        console.warn('MaSoThue.com fetch warning:', e);
       }
 
+      // If still missing name, try GoClaw fallback
       if (!extracted.name && !extracted.taxCode) {
         return {
           success: false,
-          error: `Không tìm thấy thông tin cho mã số thuế ${cleanMst}.`,
-          rawMarkdown
+          error: `Không tìm thấy thông tin trên MaSoThue.com cho mã số thuế ${cleanMst}.`,
+          rawMarkdown: rawContent
         };
       }
 
@@ -144,19 +151,19 @@ export async function crawlCompanyInfo(query: string): Promise<{
           mainBusiness: extracted.mainBusiness || 'Chưa cập nhật',
           managementUnit: extracted.managementUnit || 'Chưa cập nhật',
           sourceUrl,
-          rawContent: rawMarkdown
+          rawContent
         },
-        rawMarkdown
+        rawMarkdown: rawContent
       };
     } else if (isUrl(trimmed)) {
       sourceUrl = trimmed;
       const goclawUrl = `https://fetch.goclaw.sh/${sourceUrl}`;
       const goclawRes = await fetch(goclawUrl, { next: { revalidate: 0 } });
       if (!goclawRes.ok) {
-        return { success: false, error: `Không thể kết nối qua GoClaw Fetch (Status: ${goclawRes.status})` };
+        return { success: false, error: `Không thể kết nối URL (Status: ${goclawRes.status})` };
       }
-      rawMarkdown = await goclawRes.text();
-      const parsed = parseMarkdownCompany(rawMarkdown);
+      rawContent = await goclawRes.text();
+      const parsed = parseMasothueHtml(rawContent);
 
       return {
         success: true,
@@ -174,140 +181,141 @@ export async function crawlCompanyInfo(query: string): Promise<{
           mainBusiness: parsed.mainBusiness || 'Chưa cập nhật',
           managementUnit: parsed.managementUnit || 'Chưa cập nhật',
           sourceUrl,
-          rawContent: rawMarkdown
+          rawContent
         },
-        rawMarkdown
+        rawMarkdown: rawContent
       };
     } else {
-      // Search by Company Name via GoClaw Fetch API
-      sourceUrl = `https://thongtindoanhnghiep.co/tim-kiem?q=${encodeURIComponent(trimmed)}`;
-      const goclawUrl = `https://fetch.goclaw.sh/${sourceUrl}`;
-      const goclawRes = await fetch(goclawUrl, { next: { revalidate: 0 } });
+      // Search by Company Name on MaSoThue.com
+      sourceUrl = `https://masothue.com/Search/?q=${encodeURIComponent(trimmed)}&type=auto`;
+      const res = await fetch(sourceUrl, { headers: DEFAULT_HEADERS, next: { revalidate: 0 } });
 
-      if (!goclawRes.ok) {
-        return { success: false, error: `Không thể tìm kiếm qua GoClaw Fetch API (Status: ${goclawRes.status})` };
+      if (res.ok) {
+        rawContent = await res.text();
+        const parsed = parseMasothueHtml(rawContent);
+
+        return {
+          success: true,
+          data: {
+            taxCode: parsed.taxCode || 'MST_' + Math.floor(1000000000 + Math.random() * 9000000000),
+            name: parsed.name || trimmed,
+            internationalName: parsed.internationalName || '',
+            shortName: parsed.shortName || '',
+            address: parsed.address || '',
+            legalRepresentative: parsed.legalRepresentative || 'Chưa cập nhật',
+            phone: parsed.phone || 'Chưa cập nhật',
+            email: parsed.email || 'Chưa cập nhật',
+            foundingDate: parsed.foundingDate || 'Chưa cập nhật',
+            status: parsed.status || 'Đang hoạt động',
+            mainBusiness: parsed.mainBusiness || 'Chưa cập nhật',
+            managementUnit: parsed.managementUnit || 'Chưa cập nhật',
+            sourceUrl,
+            rawContent
+          },
+          rawMarkdown: rawContent
+        };
+      } else {
+        return { success: false, error: 'Không thể tìm kiếm thông tin trên MaSoThue.com.' };
       }
-
-      rawMarkdown = await goclawRes.text();
-      const parsed = parseMarkdownCompany(rawMarkdown);
-
-      return {
-        success: true,
-        data: {
-          taxCode: parsed.taxCode || 'MST_' + Math.floor(1000000000 + Math.random() * 9000000000),
-          name: parsed.name || trimmed,
-          internationalName: parsed.internationalName || '',
-          shortName: parsed.shortName || '',
-          address: parsed.address || '',
-          legalRepresentative: parsed.legalRepresentative || 'Chưa cập nhật',
-          phone: parsed.phone || 'Chưa cập nhật',
-          email: parsed.email || 'Chưa cập nhật',
-          foundingDate: parsed.foundingDate || 'Chưa cập nhật',
-          status: parsed.status || 'Đang hoạt động',
-          mainBusiness: parsed.mainBusiness || 'Chưa cập nhật',
-          managementUnit: parsed.managementUnit || 'Chưa cập nhật',
-          sourceUrl,
-          rawContent: rawMarkdown
-        },
-        rawMarkdown
-      };
     }
   } catch (err: any) {
     console.error('Crawl Error:', err);
     return {
       success: false,
       error: err.message || 'Lỗi hệ thống khi thu thập dữ liệu.',
-      rawMarkdown
+      rawMarkdown: rawContent
     };
   }
 }
 
 /**
- * Smart Markdown Parser for Vietnamese Business Directories
+ * Smart HTML/Text Parser for MaSoThue.com
  */
-function parseMarkdownCompany(markdown: string, targetMst?: string): Partial<ExtractedCompanyData> {
+function parseMasothueHtml(html: string, targetMst?: string): Partial<ExtractedCompanyData> {
   const res: Partial<ExtractedCompanyData> = {};
+  const cleanText = (str: string | undefined) =>
+    str ? str.replace(/<[^>]+>/g, '').trim().replace(/\s+/g, ' ') : '';
 
   // Extract Tax Code
-  const mstMatch = markdown.match(/(?:Mã số thuế|MST|Mã Số Thuế)[:\s]*\**([0-9]{10}(?:-[0-9]{3})?)\**/i)
-    || markdown.match(/\b([0-9]{10}(?:-[0-9]{3})?)\b/);
+  const mstMatch = html.match(/Mã số thuế<\/td>\s*<td[^>]*>(.*?)<\/td>/i)
+    || html.match(/itemprop=['"]taxID['"][^>]*>(.*?)<\/td>/i)
+    || html.match(/Mã số thuế:\s*\**([0-9]{10}(?:-[0-9]{3})?)\**/i)
+    || html.match(/\b([0-9]{10}(?:-[0-9]{3})?)\b/);
+  
   if (mstMatch && mstMatch[1]) {
-    res.taxCode = mstMatch[1];
+    res.taxCode = cleanText(mstMatch[1]);
   } else if (targetMst) {
     res.taxCode = targetMst;
   }
 
   // Extract Company Name
-  const nameMatch = markdown.match(/##\s*([^\n#]+)/)
-    || markdown.match(/#\s*([^\n#]+)/)
-    || markdown.match(/(?:Tên doanh nghiệp|Tên công ty|Tên chính thức)[:\s]*\**([^\n\*]+)\**/i);
+  const nameMatch = html.match(/<th[^>]*itemprop=['"]name['"][^>]*>\s*<span[^>]*class=['"]title-1['"][^>]*>(.*?)<\/span>/i)
+    || html.match(/<span[^>]*class=['"]title-1['"][^>]*>(.*?)<\/span>/i)
+    || html.match(/<h1[^>]*class=['"]title-1['"][^>]*>(.*?)<\/h1>/i)
+    || html.match(/<h1[^>]*>(.*?)<\/h1>/i);
+
   if (nameMatch && nameMatch[1]) {
-    res.name = nameMatch[1].trim().replace(/^[\*\#\s\-\:]+/, '').replace(/[\*\#]+$/, '');
+    const rawN = cleanText(nameMatch[1]);
+    // Clean MST prefix if name starts with "0100109106 - ..."
+    res.name = rawN.replace(/^[0-9]{10}(?:-[0-9]{3})?\s*-\s*/, '').trim();
   }
 
-  // Extract Legal Representative (Chủ sở hữu, Người đại diện, Đại diện pháp luật, Giám đốc)
-  const repMatch = markdown.match(/(?:Chủ sở hữu|Người đại diện|Đại diện pháp luật|Tên giám đốc|Chủ doanh nghiệp)[\s\n]*###\s*([^\n#]+)/i)
-    || markdown.match(/(?:Chủ sở hữu|Người đại diện|Đại diện pháp luật|Tên giám đốc)\s*\n+\s*###\s*([^\n#]+)/i)
-    || markdown.match(/(?:Chủ sở hữu|Người đại diện|Đại diện pháp luật|Tên giám đốc)\s*\n+\s*([A-Z\u00C0-\u024F\u1E00-\u1EFF\s]{4,40})/i)
-    || markdown.match(/(?:Đại diện pháp luật|Người đại diện|Chủ sở hữu|Giám đốc)[:\s]*\**([^\n\*]+)\**/i)
-    || markdown.match(/\[([A-Z\u00C0-\u024F\u1E00-\u1EFF\s]{4,40})\]\(https:\/\/thongtindoanhnghiep\.co\/tim-kiem\?kwd=/i);
+  // Extract Legal Representative (Tên người đại diện)
+  const repMatch = html.match(/<tr[^>]*itemprop=['"]alumni['"][^>]*>[\s\S]*?<span[^>]*itemprop=['"]name['"][^>]*>(.*?)<\/span>/i)
+    || html.match(/Người đại diện<\/td>\s*<td[^>]*>(.*?)<\/td>/i)
+    || html.match(/Chủ sở hữu<\/td>\s*<td[^>]*>(.*?)<\/td>/i)
+    || html.match(/Giám đốc<\/td>\s*<td[^>]*>(.*?)<\/td>/i);
 
   if (repMatch && repMatch[1]) {
-    res.legalRepresentative = repMatch[1].trim().replace(/^###\s*/, '');
+    const rawR = cleanText(repMatch[1]);
+    if (rawR && rawR.length > 2) res.legalRepresentative = rawR;
   }
 
-  // Extract Phone Number (Số điện thoại)
-  const phoneMatch = markdown.match(/(?:Điện thoại \/ Fax|Điện thoại|SĐT|Phone|Tel|Mobile|Số điện thoại)[:\s]*\**([0-9\.\s\+\-\(\)]{8,20})\**/i)
-    || markdown.match(/(?:Điện thoại \/ Fax|Điện thoại|SĐT)[\s\n]*###\s*([0-9\.\s\+\-\(\)]{8,20})/i)
-    || markdown.match(/(?:Điện thoại \/ Fax|Điện thoại|SĐT)[\s\n]*\n+([0-9\.\s\+\-\(\)]{8,20})/i);
+  // Extract Phone Number
+  const phoneMatch = html.match(/<i[^>]*class=['"]fa fa-phone['"][^>]*><\/i>\s*Điện thoại<\/td>\s*<td[^>]*>(.*?)<\/td>/i)
+    || html.match(/Điện thoại<\/td>\s*<td[^>]*>(.*?)<\/td>/i);
 
   if (phoneMatch && phoneMatch[1]) {
-    const rawP = phoneMatch[1].trim().replace(/^\/$/, '');
+    const rawP = cleanText(phoneMatch[1]).replace(/Ẩn số điện thoại/gi, '').trim();
     if (rawP && rawP.length >= 8) res.phone = rawP;
   }
 
-  // Extract Email
-  const emailMatch = markdown.match(/(?:Email|Thư điện tử|E-mail)[:\s]*\**([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\**/i)
-    || markdown.match(/\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/i);
+  // Extract Address
+  const addrMatch = html.match(/<i[^>]*class=['"]fa fa-map-marker['"][^>]*><\/i>\s*Địa chỉ<\/td>\s*<td[^>]*>(.*?)<\/td>/i)
+    || html.match(/Địa chỉ<\/td>\s*<td[^>]*>(.*?)<\/td>/i);
 
-  if (emailMatch && emailMatch[1]) {
-    res.email = emailMatch[1].trim();
+  if (addrMatch && addrMatch[1]) {
+    res.address = cleanText(addrMatch[1]);
   }
 
-  // Extract Address
-  const addrMatch = markdown.match(/(?:Địa chỉ|Địa chỉ trụ sở)[:\s]*\**([^\n\*]+)\**/i)
-    || markdown.match(/Địa chỉ:\s*\*\*([^\*]+)\*\*/i);
-  if (addrMatch && addrMatch[1]) {
-    res.address = addrMatch[1].trim();
+  // Extract Main Business
+  const bizMatch = html.match(/Ngành nghề chính<\/td>\s*<td[^>]*>(.*?)<\/td>/i)
+    || html.match(/Ngành nghề<\/td>\s*<td[^>]*>(.*?)<\/td>/i);
+
+  if (bizMatch && bizMatch[1]) {
+    res.mainBusiness = cleanText(bizMatch[1]);
   }
 
   // Extract Founding Date
-  const dateMatch = markdown.match(/(?:Ngày thành lập|Ngày hoạt động|Ngày cấp)[:\s]*\**([0-9]{2}[-\/][0-9]{2}[-\/][0-9]{4})\**/i)
-    || markdown.match(/(?:Ngày thành lập|Ngày hoạt động|Ngày cấp)[:\s]*\**([0-9]{4}[-\/][0-9]{2}[-\/][0-9]{2})\**/i);
+  const dateMatch = html.match(/Ngày hoạt động<\/td>\s*<td[^>]*>(.*?)<\/td>/i)
+    || html.match(/Ngày cấp<\/td>\s*<td[^>]*>(.*?)<\/td>/i);
+
   if (dateMatch && dateMatch[1]) {
-    res.foundingDate = dateMatch[1].trim();
-  }
-
-  // Extract Main Business (Ngành nghề kinh doanh chính)
-  const bizMatch = markdown.match(/Ngành nghề kinh doanh chính:\s*\*\*([^\*]+)\*\*/i)
-    || markdown.match(/(?:Ngành nghề chính|Ngành nghề kinh doanh chính)[:\s]*\**\[?\**([^\n\]\*]+)\**\]?/i)
-    || markdown.match(/Ngành nghề chính[\s\n]*\[\*\*([^\*]+)\*\*\]/i)
-    || markdown.match(/Ngành nghề chính[\s\n]*\[([^\]]+)\]/i);
-
-  if (bizMatch && bizMatch[1]) {
-    res.mainBusiness = bizMatch[1].trim();
+    res.foundingDate = cleanText(dateMatch[1]);
   }
 
   // Extract Management Unit
-  const unitMatch = markdown.match(/(?:Quản lý bởi|Chi cục thuế|Đơn vị quản lý|Nơi đăng ký quản lý)[:\s]*\**([^\n\*]+)\**/i);
+  const unitMatch = html.match(/Quản lý bởi<\/td>\s*<td[^>]*>(.*?)<\/td>/i);
+
   if (unitMatch && unitMatch[1]) {
-    res.managementUnit = unitMatch[1].trim();
+    res.managementUnit = cleanText(unitMatch[1]);
   }
 
   // Extract Status
-  const statusMatch = markdown.match(/(?:Trạng thái|Tình trạng)[:\s]*\**([^\n\*]+)\**/i);
+  const statusMatch = html.match(/Trạng thái<\/td>\s*<td[^>]*>(.*?)<\/td>/i);
+
   if (statusMatch && statusMatch[1]) {
-    res.status = statusMatch[1].trim();
+    res.status = cleanText(statusMatch[1]);
   }
 
   return res;

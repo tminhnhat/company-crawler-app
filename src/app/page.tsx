@@ -146,11 +146,11 @@ export default function HomePage() {
 
           <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-tight max-w-4xl mx-auto">
             Tra Cứu Thông Tin Doanh Nghiệp <br className="hidden sm:inline" />
-            Bằng <span className="gradient-text">Mã Số Thuế & GoClaw Fetch API</span>
+            Bằng <span className="gradient-text">Mã Số Thuế & MaSoThue.com Engine</span>
           </h1>
 
           <p className="text-sm sm:text-base text-slate-400 max-w-2xl mx-auto leading-relaxed">
-            Nhập Mã số thuế, Tên doanh nghiệp hoặc URL bất kỳ để tự động bóc tách dữ liệu và lưu giữ vào SQLite Database chỉ trong vài giây.
+            Nhập Mã số thuế, Tên doanh nghiệp hoặc URL để tự động bóc tách dữ liệu chuẩn xác từ MaSoThue.com và lưu giữ vào SQLite Database chỉ trong vài giây.
           </p>
 
           {/* Search Box */}
@@ -251,7 +251,7 @@ export default function HomePage() {
       <footer className="w-full border-t border-slate-900 bg-slate-950/80 py-6">
         <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500 space-y-2">
           <p>
-            TaxClaw App - Powered by <a href="https://fetch.goclaw.sh/" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">GoClaw Fetch API</a> & SQLite Database
+            TaxClaw App - Powered by <a href="https://masothue.com" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">MaSoThue.com</a> & VietQR API & SQLite Database
           </p>
           <p className="text-[11px] text-slate-600">Tự động hóa bóc tách dữ liệu thông tin doanh nghiệp Việt Nam.</p>
         </div>
