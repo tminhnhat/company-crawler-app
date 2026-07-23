@@ -1,0 +1,28 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Company {
+  id                    String   @id @default(uuid())
+  taxCode               String   @unique
+  name                  String
+  internationalName     String?  @default("")
+  shortName             String?  @default("")
+  address               String?  @default("")
+  legalRepresentative   String?  @default("")
+  phone                 String?  @default("")
+  email                 String?  @default("")
+  foundingDate          String?  @default("")
+  status                String?  @default("Đang hoạt động")
+  mainBusiness          String?  @default("")
+  managementUnit        String?  @default("")
+  sourceUrl             String?  @default("")
+  rawContent            String?  @default("")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
