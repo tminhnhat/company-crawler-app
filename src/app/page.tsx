@@ -19,6 +19,8 @@ import { CompanyCard, Company } from '@/components/CompanyCard';
 import { CompanyTable } from '@/components/CompanyTable';
 import { BatchCrawlModal } from '@/components/BatchCrawlModal';
 
+const LOCAL_STORAGE_KEY = 'taxclaw_companies_cache';
+
 export default function HomePage() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -37,16 +39,68 @@ export default function HomePage() {
     { label: 'Vietcombank', taxCode: '0100112437' }
   ];
 
-  // Fetch companies from SQLite DB
+  // Load & Sync companies from API + localStorage
   const fetchDbCompanies = async () => {
+    let apiCompanies: Company[] = [];
     try {
-      const res = await fetch('/api/companies');
+      const res = await fetch('/api/companies', { cache: 'no-store' });
       const data = await res.json();
       if (data.success && data.companies) {
-        setDbCompanies(data.companies);
+        apiCompanies = data.companies;
       }
     } catch (err) {
-      console.error('Failed to load DB companies:', err);
+      console.error('Failed to load API DB companies:', err);
+    }
+
+    // Merge with LocalStorage Cache for 100% data persistence on serverless/Vercel
+    try {
+      const localRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
+      const localCompanies: Company[] = localRaw ? JSON.parse(localRaw) : [];
+
+      const map = new Map<string, Company>();
+
+      // Add local companies first
+      localCompanies.forEach(c => {
+        if (c.taxCode) map.set(c.taxCode, c);
+      });
+
+      // Add/Override with API DB companies
+      apiCompanies.forEach(c => {
+        if (c.taxCode) map.set(c.taxCode, c);
+      });
+
+      const mergedList = Array.from(map.values()).sort((a, b) => {
+        const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return timeB - timeA;
+      });
+
+      setDbCompanies(mergedList);
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mergedList));
+    } catch (e) {
+      setDbCompanies(apiCompanies);
+    }
+  };
+
+  // Helper to save new company to local cache & state
+  const saveToLocalCache = (newCompanies: Company[]) => {
+    try {
+      const localRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
+      const localCompanies: Company[] = localRaw ? JSON.parse(localRaw) : [];
+      const map = new Map<string, Company>();
+
+      localCompanies.forEach(c => {
+        if (c.taxCode) map.set(c.taxCode, c);
+      });
+
+      newCompanies.forEach(c => {
+        if (c.taxCode) map.set(c.taxCode, c);
+      });
+
+      const mergedList = Array.from(map.values());
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(mergedList));
+    } catch (e) {
+      console.warn('LocalStorage save warning:', e);
     }
   };
 
@@ -77,6 +131,8 @@ export default function HomePage() {
         setCurrentCompany(data.company);
         setRawMarkdown(data.rawMarkdown || '');
         setCrawledCountSession(prev => prev + 1);
+
+        saveToLocalCache([data.company]);
         fetchDbCompanies(); // Refresh DB list
       } else {
         setErrorMsg(data.error || 'Không thể thu thập dữ liệu.');
@@ -89,38 +145,42 @@ export default function HomePage() {
     }
   };
 
-  // Delete company from DB
+  // Delete company from DB & Cache
   const handleDeleteCompany = async (id: string, taxCode: string) => {
     if (!confirm(`Bạn có chắc chắn muốn xóa doanh nghiệp MST ${taxCode} khỏi Database?`)) return;
 
     try {
-      const res = await fetch(`/api/companies?${id ? `id=${id}` : `taxCode=${taxCode}`}`, {
+      await fetch(`/api/companies?${id ? `id=${id}` : `taxCode=${taxCode}`}`, {
         method: 'DELETE'
       });
-      const data = await res.json();
-      if (data.success) {
-        if (currentCompany?.taxCode === taxCode) {
-          setCurrentCompany(null);
+
+      // Remove from LocalStorage
+      try {
+        const localRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (localRaw) {
+          const localCompanies: Company[] = JSON.parse(localRaw);
+          const filtered = localCompanies.filter(c => c.taxCode !== taxCode && c.id !== id);
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(filtered));
         }
-        fetchDbCompanies();
-      } else {
-        alert(data.error || 'Lỗi khi xóa.');
+      } catch (e) {}
+
+      if (currentCompany?.taxCode === taxCode) {
+        setCurrentCompany(null);
       }
+      fetchDbCompanies();
     } catch (err: any) {
       alert('Lỗi xóa: ' + err.message);
     }
   };
 
-  // Clear all DB records
+  // Clear all DB records & Cache
   const handleClearAll = async () => {
     if (!confirm('CẢNH BÁO: Bạn có muốn xóa toàn bộ cơ sở dữ liệu doanh nghiệp không?')) return;
     try {
-      const res = await fetch('/api/companies?all=true', { method: 'DELETE' });
-      const data = await res.json();
-      if (data.success) {
-        setCurrentCompany(null);
-        fetchDbCompanies();
-      }
+      await fetch('/api/companies?all=true', { method: 'DELETE' });
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+      setCurrentCompany(null);
+      fetchDbCompanies();
     } catch (err: any) {
       alert('Lỗi xóa DB: ' + err.message);
     }
@@ -262,6 +322,7 @@ export default function HomePage() {
         isOpen={isBatchOpen}
         onClose={() => setIsBatchOpen(false)}
         onSuccessBatch={newCompanies => {
+          saveToLocalCache(newCompanies);
           if (newCompanies.length > 0) {
             setCurrentCompany(newCompanies[0]);
           }
