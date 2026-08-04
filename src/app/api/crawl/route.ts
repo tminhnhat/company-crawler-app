@@ -10,25 +10,56 @@ export async function POST(req: NextRequest) {
     // Batch Crawl Mode
     if (Array.isArray(queries) && queries.length > 0) {
       const results = [];
+
       for (const item of queries) {
         if (!item || typeof item !== 'string') continue;
-        const res = await crawlCompanyInfo(item);
+        const trimmedItem = item.trim();
+        if (!trimmedItem) continue;
+
+        const res = await crawlCompanyInfo(trimmedItem);
+
         if (res.success && res.data) {
           try {
+            const taxCodeToSave = (res.data.taxCode || '').trim() || (`MST_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+            
+            const companyData = {
+              taxCode: taxCodeToSave,
+              name: res.data.name || trimmedItem,
+              internationalName: res.data.internationalName || '',
+              shortName: res.data.shortName || '',
+              address: res.data.address || '',
+              legalRepresentative: res.data.legalRepresentative || 'Chưa cập nhật',
+              phone: res.data.phone || 'Chưa cập nhật',
+              email: res.data.email || 'Chưa cập nhật',
+              foundingDate: res.data.foundingDate || 'Chưa cập nhật',
+              status: res.data.status || 'Đang hoạt động',
+              mainBusiness: res.data.mainBusiness || 'Chưa cập nhật',
+              managementUnit: res.data.managementUnit || 'Chưa cập nhật',
+              sourceUrl: res.data.sourceUrl || '',
+              rawContent: res.data.rawContent || ''
+            };
+
             const saved = await prisma.company.upsert({
-              where: { taxCode: res.data.taxCode },
-              update: { ...res.data },
-              create: { ...res.data }
+              where: { taxCode: taxCodeToSave },
+              update: companyData,
+              create: companyData
             });
-            results.push({ query: item, success: true, company: saved });
+
+            results.push({ query: trimmedItem, success: true, company: saved });
           } catch (dbErr: any) {
-            console.error('Database Save Error for', item, dbErr);
-            results.push({ query: item, success: false, error: 'Lỗi lưu database: ' + dbErr.message, data: res.data });
+            console.error('Database Batch Save Error for:', trimmedItem, dbErr);
+            results.push({
+              query: trimmedItem,
+              success: false,
+              error: 'Lỗi lưu database: ' + (dbErr.message || 'Không thể lưu vào SQLite'),
+              data: res.data
+            });
           }
         } else {
-          results.push({ query: item, success: false, error: res.error });
+          results.push({ query: trimmedItem, success: false, error: res.error || 'Khôn thu thập được thông tin.' });
         }
       }
+
       return NextResponse.json({ success: true, batchResults: results });
     }
 
@@ -41,17 +72,36 @@ export async function POST(req: NextRequest) {
     if (!crawlRes.success || !crawlRes.data) {
       return NextResponse.json({
         success: false,
-        error: crawlRes.error || 'Khôn thu thập được thông tin.',
+        error: crawlRes.error || 'Không thu thập được thông tin.',
         rawMarkdown: crawlRes.rawMarkdown
       }, { status: 404 });
     }
 
+    const taxCodeToSave = (crawlRes.data.taxCode || '').trim() || (`MST_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+
+    const companyData = {
+      taxCode: taxCodeToSave,
+      name: crawlRes.data.name || query,
+      internationalName: crawlRes.data.internationalName || '',
+      shortName: crawlRes.data.shortName || '',
+      address: crawlRes.data.address || '',
+      legalRepresentative: crawlRes.data.legalRepresentative || 'Chưa cập nhật',
+      phone: crawlRes.data.phone || 'Chưa cập nhật',
+      email: crawlRes.data.email || 'Chưa cập nhật',
+      foundingDate: crawlRes.data.foundingDate || 'Chưa cập nhật',
+      status: crawlRes.data.status || 'Đang hoạt động',
+      mainBusiness: crawlRes.data.mainBusiness || 'Chưa cập nhật',
+      managementUnit: crawlRes.data.managementUnit || 'Chưa cập nhật',
+      sourceUrl: crawlRes.data.sourceUrl || '',
+      rawContent: crawlRes.data.rawContent || ''
+    };
+
     // Save/Upsert to SQLite DB
     try {
       const company = await prisma.company.upsert({
-        where: { taxCode: crawlRes.data.taxCode },
-        update: { ...crawlRes.data },
-        create: { ...crawlRes.data }
+        where: { taxCode: taxCodeToSave },
+        update: companyData,
+        create: companyData
       });
 
       return NextResponse.json({
@@ -60,10 +110,10 @@ export async function POST(req: NextRequest) {
         rawMarkdown: crawlRes.rawMarkdown
       });
     } catch (dbErr: any) {
-      console.error('Database Upsert Error:', dbErr);
+      console.error('Database Single Upsert Error:', dbErr);
       return NextResponse.json({
         success: true,
-        company: crawlRes.data,
+        company: companyData,
         warning: 'Crawl thành công nhưng gặp lỗi khi lưu Database: ' + dbErr.message,
         rawMarkdown: crawlRes.rawMarkdown
       });
